@@ -125,8 +125,6 @@ ConVar cl_gunlowerspeed( "cl_gunlowerspeed", "2", FCVAR_CLIENTDLL | FCVAR_CHEAT 
 ConVar tf_use_min_viewmodels( "tf_use_min_viewmodels", "0", FCVAR_ARCHIVE, "Use minimized viewmodels." );
 
 ConVar tf_viewmodels_offset_override( "tf_viewmodels_offset_override", "", FCVAR_CHEAT, "If set, this will override the position of all viewmodels. Usage 'x y z'" );
-
-ConVar tf_viewmodel_cloak_tint( "tf_viewmodel_cloak_tint", "0", FCVAR_ARCHIVE, "Allow viewmodels to be tinted while cloaked.", true, 0.0f, true, 1.0f );
 #endif
 
 void CTFViewModel::CalcViewModelView( CBasePlayer *owner, const Vector& eyePosition, const QAngle& eyeAngles )
@@ -424,6 +422,9 @@ public:
 	virtual void OnBind( C_BaseEntity *pC_BaseEntity );
 };
 
+#define TF_VM_MIN_INVIS		0.22
+#define TF_VM_MAX_INVIS		0.5
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Input :
@@ -478,6 +479,12 @@ void CViewModelInvisProxy::OnBind( C_BaseEntity *pEnt )
 
 	if ( bIsViewModel == true )
 	{
+		// remap from 0.22 to 0.5
+		// but drop to 0.0 if we're not invis at all
+		flWeaponInvis = (flPercentInvisible < 0.01) ?
+			0.0 :
+			RemapVal(flPercentInvisible, 0.0, 1.0, TF_VM_MIN_INVIS, TF_VM_MAX_INVIS);
+
 		// Exaggerated blink effect on bump.
 		if ( pPlayer->m_Shared.InCond( TF_COND_STEALTHED_BLINK ) )
 		{
@@ -496,199 +503,5 @@ void CViewModelInvisProxy::OnBind( C_BaseEntity *pEnt )
 }
 
 EXPOSE_INTERFACE( CViewModelInvisProxy, IMaterialProxy, "vm_invis" IMATERIAL_PROXY_INTERFACE_VERSION );
-
-
-//-----------------------------------------------------------------------------
-// Purpose: Generic invis proxy that can handle invis for both weapons & viewmodels.
-//			Makes the vm_invis & weapon_invis proxies obsolete, do not use them.
-//-----------------------------------------------------------------------------
-class CInvisProxy : public CBaseInvisMaterialProxy
-{
-public:
-	CInvisProxy( void );
-	virtual bool Init( IMaterial* pMaterial, KeyValues* pKeyValues ) OVERRIDE;
-	virtual void OnBind( C_BaseEntity *pC_BaseEntity ) OVERRIDE;
-
-private:
-	IMaterialVar* m_pCloakColorTint;
-};
-
-//-----------------------------------------------------------------------------
-// Purpose: 
-//-----------------------------------------------------------------------------
-CInvisProxy::CInvisProxy( void )
-{
-	m_pCloakColorTint = NULL;
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: Get pointer to the color value
-// Input  : *pMaterial - 
-//-----------------------------------------------------------------------------
-bool CInvisProxy::Init( IMaterial* pMaterial, KeyValues* pKeyValues )
-{
-	// Need to get the material var
-	bool bInvis = CBaseInvisMaterialProxy::Init( pMaterial, pKeyValues );
-
-	bool bTint;
-	m_pCloakColorTint = pMaterial->FindVar( "$cloakColorTint", &bTint );
-
-	return ( bInvis && bTint );
-}
-
-extern Vector cloakTintRed;
-extern Vector cloakTintBlue;
-
-//-----------------------------------------------------------------------------
-// Purpose: 
-//-----------------------------------------------------------------------------
-void CInvisProxy::OnBind( C_BaseEntity *pC_BaseEntity )
-{
-	if( !m_pPercentInvisible )
-		return;
-
-	C_BaseEntity *pEnt = pC_BaseEntity;
-
-	CTFPlayer *pPlayer = NULL;
-
-	// Check if we have a move parent and if it's a player
-	C_BaseEntity *pMoveParent = pEnt->GetMoveParent();
-	if ( pMoveParent && pMoveParent->IsPlayer() )
-	{
-		pPlayer = ToTFPlayer( pMoveParent );
-
-		Vector vecColor{ 1.0f, 1.0f, 1.0f };
-
-		// Anything relating to players will always fully tint
-		switch (pPlayer->GetTeamNumber())
-		{
-		case TF_TEAM_RED:
-			vecColor = cloakTintRed;
-			break;
-		case TF_TEAM_BLUE:
-		default:
-			vecColor = cloakTintBlue;
-			break;
-		}
-
-		m_pCloakColorTint->SetVecValue(vecColor.Base(), 3);
-	}
-
-	// If it's not a player then check for viewmodel
-	if ( !pPlayer )
-	{
-		CBaseEntity* pEntParent = pMoveParent ? pMoveParent : pEnt;
-
-		CTFViewModel* pVM = dynamic_cast<CTFViewModel*>(pEntParent);
-		if (pVM)
-		{
-			pPlayer = ToTFPlayer(pVM->GetOwner());
-
-			// Viewmodels cloak tinting
-			Vector vecColor{ 1.0f, 1.0f, 1.0f };
-			float flViewmodelTintFactor = tf_viewmodel_cloak_tint.GetFloat();
-
-			switch (pPlayer->GetTeamNumber())
-			{
-			case TF_TEAM_RED:
-				vecColor = cloakTintRed;
-				break;
-			case TF_TEAM_BLUE:
-			default:
-				vecColor = cloakTintBlue;
-				break;
-			}
-
-			// Blend the color based on viewmodel cloak tint factor
-			VectorLerp( Vector(1.0f, 1.0f, 1.0f), vecColor, flViewmodelTintFactor, vecColor );
-			m_pCloakColorTint->SetVecValue( vecColor.Base(), 3 );
-		}
-	}
-	
-	if ( !pPlayer )
-	{
-		if ( pEnt->IsPlayer() )
-		{
-			pPlayer = dynamic_cast<C_TFPlayer*>( pEnt );
-		}
-		else
-		{
-			IHasOwner *pOwnerInterface = dynamic_cast<IHasOwner*>( pEnt );
-			if ( pOwnerInterface )
-			{
-				pPlayer = ToTFPlayer( pOwnerInterface->GetOwnerViaInterface() );
-			}
-		}
-	}
-	
-	// Handle cloaking ragdolls
-	if ( !pPlayer )
-	{
-		C_TFRagdoll *pRagdoll = dynamic_cast< C_TFRagdoll* >( pEnt );
-		if ( pRagdoll && pRagdoll->IsCloaked() )
-		{
-			m_pPercentInvisible->SetFloatValue( pRagdoll->GetPercentInvisible() );
-		}
-		else
-		{
-			m_pPercentInvisible->SetFloatValue( 0.0f );
-		}
-		return;
-	}
-	else
-	{
-		// Check for actual players
-		C_TFPlayer* pPlayer = ToTFPlayer(pC_BaseEntity);
-
-		if ( pPlayer )
-		{
-			Vector vecColor{ 1.0f, 1.0f, 1.0f };
-
-			switch (pPlayer->GetTeamNumber())
-			{
-			case TF_TEAM_RED:
-				vecColor = cloakTintRed;
-				break;
-			case TF_TEAM_BLUE:
-			default:
-				vecColor = cloakTintBlue;
-				break;
-			}
-
-			m_pCloakColorTint->SetVecValue( vecColor.Base(), 3 );
-		}
-	}
-
-	// If we're the local player, use the old "vm_invis" code. Otherwise, use the "weapon_invis".
-	if ( pPlayer->IsLocalPlayer() )
-	{
-		float flPercentInvisible = pPlayer->GetEffectiveInvisibilityLevel();
-		float flWeaponInvis = flPercentInvisible;
-
-		// Exaggerated blink effect on bump.
-		if ( pPlayer->m_Shared.InCond( TF_COND_STEALTHED_BLINK ) )
-		{
-			flWeaponInvis = 0.3f;
-		}
-
-		// Also exaggerate the effect if we're using motion cloak and our well has run dry.
-		CTFWeaponInvis *pWpn = (CTFWeaponInvis *) pPlayer->Weapon_OwnsThisID( TF_WEAPON_INVIS );
-		if ( pWpn && pWpn->HasMotionCloak() && (pPlayer->m_Shared.GetSpyCloakMeter() <= 0.f ) )
-		{
-			flWeaponInvis = 0.3f;
-		}
-
-		m_pPercentInvisible->SetFloatValue( flWeaponInvis );
-	}
-	else
-	{
-		m_pPercentInvisible->SetFloatValue( pPlayer->GetEffectiveInvisibilityLevel() );
-	}
-}
-
-//	Generic invis proxy that can handle invis for both weapons & viewmodels.
-//	Makes the vm_invis & weapon_invis proxies obsolete, do not use them.
-EXPOSE_INTERFACE( CInvisProxy, IMaterialProxy, "invis" IMATERIAL_PROXY_INTERFACE_VERSION );
-
 
 #endif // CLIENT_DLL
