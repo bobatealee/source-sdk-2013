@@ -23,17 +23,20 @@
 #include <tier0/memdbgon.h>
 
 ConVar tf_explanations_charinfo_armory_panel( "tf_explanations_charinfo_armory_panel", "0", FCVAR_ARCHIVE, "Whether the user has seen explanations for this panel." );
-ConVar tf_armory_page_skip( "tf_armory_page_skip", "10", FCVAR_ARCHIVE, "Number of pages to skip in the Mann Co. Catalogue.", true, 1, true, 100 );
+ConVar tf_armory_page_skip( "tf_armory_page_skip", "10", FCVAR_ARCHIVE, "Number of pages to skip in the Mann Co. Catalog.", true, 1, true, 100 );
 
 const char *g_szArmoryFilterStrings[ARMFILT_TOTAL] =
 {
-	"#ArmoryFilter_AllItems",		// ARMFILT_ALL_ITEMS.
+	"#ArmoryFilter_AllItems",		// ARMFILT_ALL_ITEMS,
+
 	"#ArmoryFilter_Weapons",		// ARMFILT_WEAPONS,
 	"#ArmoryFilter_MiscItems",		// ARMFILT_MISCITEMS,
+	"#ArmoryFilter_PaintkitItems",	// ARMFILT_PAINTKITITEMS,
 	"#ArmoryFilter_ActionItems",	// ARMFILT_ACTIONITEMS,
 	"#ArmoryFilter_CraftItems",		// ARMFILT_CRAFTITEMS,
 	"#ArmoryFilter_Tools",			// ARMFILT_TOOLS,
-	"#ArmoryFilter_AllClass",		// ARMFILT_CLASS_ALL,
+	"#ArmoryFilter_Donationitems",	// ARMFILT_DONATIONITEMS,
+
 	"#ArmoryFilter_Scout",			// ARMFILT_CLASS_SCOUT,
 	"#ArmoryFilter_Sniper",			// ARMFILT_CLASS_SNIPER,
 	"#ArmoryFilter_Soldier",		// ARMFILT_CLASS_SOLDIER,
@@ -43,11 +46,26 @@ const char *g_szArmoryFilterStrings[ARMFILT_TOTAL] =
 	"#ArmoryFilter_Pyro",			// ARMFILT_CLASS_PYRO,
 	"#ArmoryFilter_Spy",			// ARMFILT_CLASS_SPY,
 	"#ArmoryFilter_Engineer",		// ARMFILT_CLASS_ENGINEER,
-	"#ArmoryFilter_Donationitems",	// ARMFILT_DONATIONITEMS,
+	"#ArmoryFilter_AllClass",		// ARMFILT_CLASS_ALL,
 
-	"",								// ARMFILT_NUM_IN_DROPDOWN
+	"",								// ARMFILT_NUM_IN_DROPDOWN,
 	"Not Used",						// ARMFILT_CUSTOM
 };
+
+// List of priority (stock) items
+static const item_definition_index_t s_PriorityItems[] = {
+    190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 737, 26, 27, 211, 212, 736
+};
+static const int s_NumPriorityItems = sizeof(s_PriorityItems) / sizeof(s_PriorityItems[0]);
+
+// Priority item helper function
+static inline bool IsPriorityItem(int defIndex)
+{
+    for (int i = 0; i < s_NumPriorityItems; i++)
+        if (s_PriorityItems[i] == defIndex)
+            return true;
+    return false;
+}
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -530,9 +548,9 @@ void CArmoryPanel::SetFilterTo( int iItemDef, armory_filters_t nFilter )
 			// Never show:
 			//	- Hidden items
 			//	- Items that don't have fixed qualities
-			//	- Normal quality items
+			//	- Normal quality items that aren't priority
 			//	- Items that haven't asked to be shown
-			if ( pDef->IsHidden() || pDef->GetQuality() == k_unItemQuality_Any || pDef->GetQuality() == AE_NORMAL || !pDef->ShouldShowInArmory() )
+			if ( pDef->IsHidden() || pDef->GetQuality() == k_unItemQuality_Any || (pDef->GetQuality() == AE_NORMAL && !IsPriorityItem(pDef->GetDefinitionIndex())) || !pDef->ShouldShowInArmory() )
 				continue;
 
 #ifdef DEBUG
@@ -557,6 +575,23 @@ void CArmoryPanel::SetFilterTo( int iItemDef, armory_filters_t nFilter )
 				{
 					SetSelectedItem( pDef->GetDefinitionIndex() );
 				}
+			}
+		}
+	}
+
+	// Move priority items to the front of the list
+	int insertPos = 0;
+	for ( int j = 0; j < s_NumPriorityItems; j++ )
+	{
+		for ( int i = insertPos; i < m_FilteredItemList.Count(); i++ )
+		{
+			if ( m_FilteredItemList[i] == s_PriorityItems[j] )
+			{
+				int defIndex = m_FilteredItemList[i];
+				m_FilteredItemList.Remove(i);
+				m_FilteredItemList.InsertBefore(insertPos, defIndex);
+				insertPos++;
+				break;
 			}
 		}
 	}
@@ -595,39 +630,63 @@ bool CArmoryPanel::DefPassesFilter( const CTFItemDefinition *pDef, armory_filter
 
 	case ARMFILT_WEAPONS:
 		{
+			// Filter out slot tokens and paintkit weapons
+			if ( pDef->GetItemClass() && !V_strcmp( pDef->GetItemClass(), "slot_token" ) || pDef->GetQuality() == AE_PAINTKITWEAPON )
+				break;
+		
+			// Filter out any items not in the primary, secondary, melee, building, PDA, or PDA 2 slots
 			int iSlot = pDef->GetDefaultLoadoutSlot();
-			bInList = ( iSlot == LOADOUT_POSITION_PRIMARY || iSlot == LOADOUT_POSITION_SECONDARY || iSlot == LOADOUT_POSITION_MELEE );
+			bInList = ( iSlot == LOADOUT_POSITION_PRIMARY || iSlot == LOADOUT_POSITION_SECONDARY || iSlot == LOADOUT_POSITION_MELEE || iSlot == LOADOUT_POSITION_BUILDING || iSlot == LOADOUT_POSITION_PDA || iSlot == LOADOUT_POSITION_PDA2 );
 			break;
 		}
 
 	case ARMFILT_MISCITEMS:
 		{
-			bInList = (pDef->GetDefaultLoadoutSlot() == LOADOUT_POSITION_MISC);
+			// Filter out any items that are not a cosmetic
+			bInList = ( pDef->GetDefaultLoadoutSlot() == LOADOUT_POSITION_MISC );
+			break;
+		}
+
+	case ARMFILT_PAINTKITITEMS:
+		{
+			// Filter out any items that are not a paintkit item
+			bInList = ( pDef->GetQuality() == AE_PAINTKITWEAPON );
 			break;
 		}
 
 	case ARMFILT_ACTIONITEMS:
 		{
-			bInList = (pDef->GetDefaultLoadoutSlot() == LOADOUT_POSITION_ACTION);
+			// Filter out any items not in the action slot
+			bInList = ( pDef->GetDefaultLoadoutSlot() == LOADOUT_POSITION_ACTION );
 			break;
 		}
 
 	case ARMFILT_CRAFTITEMS:
 		{
+			// Filter out tools
+			if ( pDef->GetEconTool() || pDef->IsTool() )
+				break;
+		
+			// Filter out anything that isn't a craft item, class token, or slot token
 			bInList = pDef->GetItemClass() && ( !V_strcmp( pDef->GetItemClass(), "craft_item" ) || !V_strcmp( pDef->GetItemClass(), "class_token" ) || !V_strcmp( pDef->GetItemClass(), "slot_token" ) );
 			break;
 		}
 
 	case ARMFILT_TOOLS:
 		{
-			// For now, put the supply crates into the tool list, since it's the only item that shows up in no other lists
-			bInList = pDef->GetItemClass() && ( !V_strcmp( pDef->GetItemClass(), "tool" ) || !V_strcmp( pDef->GetItemClass(), "supply_crate" ) );
+			// Filter out paintkit tools
+			if ( pDef->GetQuality() == AE_PAINTKITWEAPON )
+				break;
+
+			// Filter out anything that isn't a tool, crate, or case
+			bInList = ( pDef->GetItemClass() && ( !V_strcmp( pDef->GetItemClass(), "tool" ) || !V_strcmp( pDef->GetItemClass(), "tf_wearable_campaign_item" ) || !V_strcmp( pDef->GetItemClass(), "supply_crate" ) ) || pDef->GetEconTool() || pDef->IsTool() );
 			break;
 		}
 
-	case ARMFILT_CLASS_ALL:
+	case ARMFILT_DONATIONITEMS:
 		{
-			bInList = pDef->CanBeUsedByAllClasses();
+			// Filter out anything that isn't a map stamp
+			bInList = pDef->GetItemClass() && !V_strcmp( pDef->GetItemClass(), "map_token" );
 			break;
 		}
 
@@ -641,20 +700,25 @@ bool CArmoryPanel::DefPassesFilter( const CTFItemDefinition *pDef, armory_filter
 	case ARMFILT_CLASS_SPY:
 	case ARMFILT_CLASS_ENGINEER:
 		{
-			// Don't show class/slot usage for class/slot tokens
+			// Filter out class tokens
 			if ( pDef->GetItemClass() && !V_strcmp( pDef->GetItemClass(), "class_token" ) )
 				break;
 
+			// Filter out anything not pertaining to this class
 			bInList = ( !pDef->CanBeUsedByAllClasses() && pDef->CanBeUsedByClass( iFilter - ARMFILT_CLASS_SCOUT + 1 ) );
 			break;
 		}
 
-	case ARMFILT_DONATIONITEMS:
+	case ARMFILT_CLASS_ALL:
 		{
-			// Don't show class/slot usage for class/slot tokens
-			bInList = pDef->GetItemClass() && !V_strcmp( pDef->GetItemClass(), "map_token" );
+			// Filter out any items in the action slot, and tools
+			if ( pDef->GetDefaultLoadoutSlot() == LOADOUT_POSITION_ACTION ||  pDef->GetItemClass() && !V_strcmp( pDef->GetItemClass(), "tool" ) )
+				break;
+		
+			bInList = pDef->CanBeUsedByAllClasses();
 			break;
 		}
+
 	}
 
 	return bInList;
@@ -706,7 +770,17 @@ void CArmoryPanel::UpdateItemList( void )
 			continue;
 		}
 
-		pItemData->Init( m_FilteredItemList[iItemPos], AE_USE_SCRIPT_VALUE, AE_USE_SCRIPT_VALUE, true );
+		int defIndex = m_FilteredItemList[iItemPos];
+		if ( IsPriorityItem(defIndex) )
+		{
+			// Slam Unique quality on priority items, for consistency
+			pItemData->Init( defIndex, AE_UNIQUE, AE_USE_SCRIPT_VALUE, true );
+		}
+		else
+		{
+			pItemData->Init( defIndex, AE_USE_SCRIPT_VALUE, AE_USE_SCRIPT_VALUE, true );
+		}
+
 		m_pThumbnailModelPanels[i]->SetItem( pItemData );
 		m_pThumbnailModelPanels[i]->SetVisible( true );
 	}
